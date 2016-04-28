@@ -128,6 +128,12 @@ int
 ghttp_set_sync(ghttp_request *a_request,
 	       ghttp_sync_mode a_mode);
 
+/* Set Operation timed out.
+ */
+
+int
+ghttp_set_timeout(ghttp_request *a_request, int timeout);
+
 /* Prepare a request.
  * Call this before trying to process a request or if you change the
  * uri.

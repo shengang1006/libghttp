@@ -22,6 +22,7 @@
 
 #include <sys/time.h>
 #include <sys/types.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -88,7 +89,7 @@ http_trans_connect(http_trans_conn *a_conn)
 	
 	//add by me
 	int flags = fcntl(a_conn->sock, F_GETFL, 0); 
-	if(fcntl(a_conn->sock, F_SETFL, flags | O_NONBLOCK) <0)}{
+	if(fcntl(a_conn->sock, F_SETFL, flags | O_NONBLOCK) <0){
 		a_conn->error_type = http_trans_err_type_errno;
         a_conn->error = errno;
         goto ec;
@@ -111,7 +112,7 @@ http_trans_connect(http_trans_conn *a_conn)
 		FD_SET(a_conn->sock, &wset);
 		tval.tv_sec = a_conn->timeout/1000; 
 		tval.tv_usec = (a_conn->timeout%1000)*1000;	
-	
+	    int64_t start_tm = get_tick_count();
 		int ret = select(a_conn->sock + 1, 0, &wset, 0, &tval);
 		if (ret <= 0 ){
 			a_conn->error_type = http_trans_err_type_errno;
@@ -128,10 +129,11 @@ http_trans_connect(http_trans_conn *a_conn)
 				goto ec;
 			}
 		}
+        a_conn->timeout -= (int)(get_tick_count() - start_tm);
     }
-  
+
   return 0;
- ec:
+    ec:
 
   return -1;
 }
@@ -154,6 +156,7 @@ http_trans_conn_new(void)
   l_return->io_buf_len = l_return->io_buf_chunksize;
   /* make sure the socket looks like it's closed */
   l_return->sock = -1;
+  l_return->timeout = 2000;
   return l_return;
 }
 
@@ -228,26 +231,24 @@ http_trans_read_into_buf(http_trans_conn *a_conn)
     l_bytes_to_read = a_conn->io_buf_chunksize;
   else
     l_bytes_to_read = a_conn->io_buf_io_left;
+    
 
-	if(a_conn->last_state){	
-		if(a_conn->timeout <= 0){
-			return HTTP_TRANS_ERR;
-		}
-		struct timeval tval ;
-		tval.tv_sec = a_conn->timeout/1000; //连接超时
-		tval.tv_usec = (a_conn->timeout%1000)*1000;	
-		
-		fd_set rset;
-		FD_ZERO(&rset);
-		FD_SET(a_conn->sock, &rset);
-		
-		int64_t start_tm = get_tick_count();
-		if(select(a_conn->sock + 1, &rset, 0, 0, &tval) <=0){
-			return HTTP_TRANS_ERR;
-		}
-		int64_t end_tm = get_tick_count();
-		a_conn->timeout -= (int)(end_tm - start_tm);
-	}
+    if(a_conn->timeout <= 0){
+        return HTTP_TRANS_ERR;
+    }
+    struct timeval tval ;
+    tval.tv_sec = a_conn->timeout/1000; //连接超时
+    tval.tv_usec = (a_conn->timeout%1000)*1000;	
+    
+    fd_set rset;
+    FD_ZERO(&rset);
+    FD_SET(a_conn->sock, &rset);
+    
+    int64_t start_tm = get_tick_count();
+    if(select(a_conn->sock + 1, &rset, 0, 0, &tval) <=0){
+        return HTTP_TRANS_ERR;
+    }
+    a_conn->timeout -= (int)(get_tick_count() - start_tm);
 	
   /* read in some data */
   if ((a_conn->last_read = l_read = read(a_conn->sock,
@@ -255,14 +256,12 @@ http_trans_read_into_buf(http_trans_conn *a_conn)
 					 l_bytes_to_read)) < 0)
     {
 	 if (errno == EINTR || errno == EAGAIN){
-		a_conn->last_state = 1;
 		return HTTP_TRANS_NOT_DONE;
 	 }
       else
 		return HTTP_TRANS_ERR;
     }
 
-  a_conn->last_state = 0;
   /* mark the buffer */
   a_conn->io_buf_io_left -= l_read;
   a_conn->io_buf_io_done += l_read;
@@ -283,8 +282,7 @@ http_trans_write_buf(http_trans_conn *a_conn)
       a_conn->io_buf_io_left = a_conn->io_buf_alloc;
       a_conn->io_buf_io_done = 0;
     }
-	
-	//add by me
+	  
 	if(a_conn->last_state){	
 		if(a_conn->timeout <= 0){
 			return HTTP_TRANS_ERR;
@@ -302,14 +300,14 @@ http_trans_write_buf(http_trans_conn *a_conn)
 		if(select(a_conn->sock + 1, 0, &wset, 0, &tval) <=0){
 			return HTTP_TRANS_ERR;
 		}
-		int64_t end_tm = get_tick_count();
-		a_conn->timeout -= (int)(end_tm - start_tm);
+
+		a_conn->timeout -= (int)(get_tick_count() - start_tm);
 	}
 		
   /* write out some data */
   if ((a_conn->last_read = l_written = write (a_conn->sock,
 					      &a_conn->io_buf[a_conn->io_buf_io_done],
-					      a_conn->io_buf_io_left)) <= 0)
+					      a_conn->io_buf_io_left)) < 0)
     {
       if (errno == EINTR || errno == EAGAIN){
 		  a_conn->last_state = 1;

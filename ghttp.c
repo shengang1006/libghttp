@@ -297,6 +297,15 @@ ghttp_set_sync(ghttp_request *a_request,
   return 0;
 }
 
+
+int
+ghttp_set_timeout(ghttp_request *a_request, int timeout){
+    if (!a_request)
+        return -1;
+    a_request->conn->timeout = timeout;
+    return 0;
+}
+
 int
 ghttp_prepare(ghttp_request *a_request)
 {
