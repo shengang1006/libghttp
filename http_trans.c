@@ -87,51 +87,25 @@ http_trans_connect(http_trans_conn *a_conn)
       goto ec;
     }
 	
-	//add by me
-	int flags = fcntl(a_conn->sock, F_GETFL, 0); 
-	if(fcntl(a_conn->sock, F_SETFL, flags | O_NONBLOCK) <0){
-		a_conn->error_type = http_trans_err_type_errno;
-        a_conn->error = errno;
-        goto ec;
-	}
+	struct timeval tval ;
+	tval.tv_sec = a_conn->timeout/1000; 
+	tval.tv_usec = (a_conn->timeout%1000)*1000;	
+	int64_t start_tm = get_tick_count();
+	
+		
+	if(setsockopt(a_conn->sock, SOL_SOCKET, SO_SNDTIMEO,(char *)&tval, sizeof(struct timeval))<0){
+		printf("setsockopt SO_SNDTIMEO fail %d\n", errno);
+	} 
 	
   /* set up the socket */
   if (connect(a_conn->sock, (struct sockaddr *)&a_conn->saddr, 
   sizeof(struct sockaddr)) < 0)
     {
-		//add by me
-		if (errno != EINTR && errno != EINPROGRESS && errno != EISCONN){
-			a_conn->error_type = http_trans_err_type_errno;
-			a_conn->error = errno;
-			goto ec;
-		}
-		
-		struct timeval tval ;
-		fd_set wset;
-		FD_ZERO(&wset);
-		FD_SET(a_conn->sock, &wset);
-		tval.tv_sec = a_conn->timeout/1000; 
-		tval.tv_usec = (a_conn->timeout%1000)*1000;	
-	    int64_t start_tm = get_tick_count();
-		int ret = select(a_conn->sock + 1, 0, &wset, 0, &tval);
-		if (ret <= 0 ){
-			a_conn->error_type = http_trans_err_type_errno;
-			a_conn->error = errno;
-			goto ec;
-		}
-		else{
-			int error = 0;
-			int len = sizeof(error);
-			ret = getsockopt(a_conn->sock, SOL_SOCKET, SO_ERROR, &error, (socklen_t*)&len);
-			if(ret < 0 || error){
-				a_conn->error_type = http_trans_err_type_errno;
-				a_conn->error = errno;
-				goto ec;
-			}
-		}
-        a_conn->timeout -= (int)(get_tick_count() - start_tm);
+		a_conn->error_type = http_trans_err_type_errno;
+		a_conn->error = errno;
+		goto ec;
     }
-
+  a_conn->timeout -= (int)(get_tick_count() - start_tm);
   return 0;
     ec:
 
@@ -239,29 +213,24 @@ http_trans_read_into_buf(http_trans_conn *a_conn)
     struct timeval tval ;
     tval.tv_sec = a_conn->timeout/1000; //连接超时
     tval.tv_usec = (a_conn->timeout%1000)*1000;	
-    
-    fd_set rset;
-    FD_ZERO(&rset);
-    FD_SET(a_conn->sock, &rset);
-    
+    if(setsockopt(a_conn->sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&tval, sizeof(struct timeval))<0){
+		printf("setsockopt SO_RCVTIMEO fail %d\n", errno);
+	}    
     int64_t start_tm = get_tick_count();
-    if(select(a_conn->sock + 1, &rset, 0, 0, &tval) <=0){
-        return HTTP_TRANS_ERR;
-    }
-    a_conn->timeout -= (int)(get_tick_count() - start_tm);
 	
   /* read in some data */
   if ((a_conn->last_read = l_read = read(a_conn->sock,
 					 &a_conn->io_buf[a_conn->io_buf_alloc],
 					 l_bytes_to_read)) < 0)
     {
-	 if (errno == EINTR || errno == EAGAIN){
+	 if (errno == EINTR){
 		return HTTP_TRANS_NOT_DONE;
 	 }
       else
 		return HTTP_TRANS_ERR;
     }
 
+  a_conn->timeout -= (int)(get_tick_count() - start_tm);
   /* mark the buffer */
   a_conn->io_buf_io_left -= l_read;
   a_conn->io_buf_io_done += l_read;
@@ -283,42 +252,34 @@ http_trans_write_buf(http_trans_conn *a_conn)
       a_conn->io_buf_io_done = 0;
     }
 	  
-	if(a_conn->last_state){	
-		if(a_conn->timeout <= 0){
-			return HTTP_TRANS_ERR;
-		}
-		
-		struct timeval tval ;
-		tval.tv_sec = a_conn->timeout/1000; //连接超时
-		tval.tv_usec = (a_conn->timeout%1000)*1000;	
-		
-		fd_set wset;
-		FD_ZERO(&wset);
-		FD_SET(a_conn->sock, &wset);
-		
-		int64_t start_tm = get_tick_count();
-		if(select(a_conn->sock + 1, 0, &wset, 0, &tval) <=0){
-			return HTTP_TRANS_ERR;
-		}
-
-		a_conn->timeout -= (int)(get_tick_count() - start_tm);
+	
+	if(a_conn->timeout <= 0){
+		return HTTP_TRANS_ERR;
 	}
-		
+	
+	struct timeval tval ;
+	tval.tv_sec = a_conn->timeout/1000; //连接超时
+	tval.tv_usec = (a_conn->timeout%1000)*1000;	
+	
+	if(setsockopt(a_conn->sock, SOL_SOCKET, SO_SNDTIMEO,(char *)&tval, sizeof(struct timeval))<0){
+		printf("setsockopt SO_SNDTIMEO fail %d\n", errno);
+	}  
+	
+  int64_t start_tm = get_tick_count();	
   /* write out some data */
   if ((a_conn->last_read = l_written = write (a_conn->sock,
 					      &a_conn->io_buf[a_conn->io_buf_io_done],
 					      a_conn->io_buf_io_left)) < 0)
     {
-      if (errno == EINTR || errno == EAGAIN){
-		  a_conn->last_state = 1;
+      if (errno == EINTR){
 		  return HTTP_TRANS_NOT_DONE;
 	  }
       else
 		return HTTP_TRANS_ERR;
     }
-	
+  a_conn->timeout -= (int)(get_tick_count() - start_tm);
   /* advance the counters */
-  a_conn->last_state = 0;
+
   a_conn->io_buf_io_left -= l_written;
   a_conn->io_buf_io_done += l_written;
   if (a_conn->io_buf_io_left == 0)
